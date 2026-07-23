@@ -1,0 +1,42 @@
+# ── Python ──────────────────────────────────────────────
+venv/
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+*.whl
+
+# ── Environment & Secrets ────────────────────────────────
+.env
+*.env.*
+!.env.example
+
+# ── PostgreSQL / Data files ──────────────────────────────
+*.sql.log
+*.dump
+*.backup
+pg_data/
+
+# ── Logs & temp files ────────────────────────────────────
+*.log
+*.tmp
+*.bak
+out.txt
+err.txt
+
+# ── OS Files ─────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── IDE & Editor ─────────────────────────────────────────
+.vscode/
+.idea/
+*.suo
+*.swp
+*.swo
