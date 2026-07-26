@@ -29,14 +29,6 @@ CATEGORIES = {
 
 BRANDS = ["Acme", "Zenith", "NovaTech", "Urban", "Pinnacle", "Everest", "Bluewave"]
 
-COUNTRY_VARIANTS = {
-    "United States": ["USA", "United States", "U.S.A.", "united states", "us"],
-    "United Kingdom": ["UK", "United Kingdom", "U.K.", "great britain", "GB"],
-    "Canada": ["Canada", "CA", "can", "canada"],
-    "India": ["India", "IN", "IND", "india"],
-    "Australia": ["Australia", "AU", "AUS", "australia"],
-}
-
 
 def get_connection():
     return psycopg2.connect(
@@ -45,57 +37,13 @@ def get_connection():
         dbname=os.getenv("PGDATABASE"),
         user=os.getenv("PGUSER"),
         password=os.getenv("PGPASSWORD"),
+        sslmode=os.getenv("PGSSLMODE", "require"),  # Azure Postgres requires SSL
     )
 
 
-def apply_messy_customer_data(first_name, last_name, email, phone, country, postal_code):
-    # 1. Mixed casing & extra whitespace
-    if random.random() < 0.2:
-        first_name = f"  {first_name.lower()}  " if random.random() < 0.5 else first_name.upper()
-    if random.random() < 0.15:
-        last_name = f"{last_name.lower()} "
-
-    # 2. Email mixed casing
-    if random.random() < 0.25:
-        parts = email.split("@")
-        email = f"{parts[0].upper()}@{parts[1]}" if random.random() < 0.5 else email.upper()
-
-    # 3. Phone formatting noise or null
-    if random.random() < 0.15:
-        phone = None
-    elif random.random() < 0.25:
-        digits = ''.join(filter(str.isdigit, phone))[:10]
-        formats = [f"({digits[:3]}) {digits[3:6]}-{digits[6:]}", f"+1-{digits[:3]}-{digits[3:]}", f"{digits}", "N/A"]
-        phone = random.choice(formats)
-
-    # 4. Inconsistent country naming
-    for key, variants in COUNTRY_VARIANTS.items():
-        if key.lower() in country.lower():
-            country = random.choice(variants)
-            break
-
-    # 5. Missing postal code
-    if random.random() < 0.15:
-        postal_code = None
-
-    return first_name, last_name, email, phone, country, postal_code
-
-
-def seed_customers(cur, n, messy=True):
-    print(f"Seeding {n} customers (messy={messy})...")
-    for i in range(n):
-        fname = fake.first_name()
-        lname = fake.last_name()
-        email = fake.unique.email()
-        phone = fake.phone_number()[:30]
-        country = fake.country()
-        postcode = fake.postcode()
-
-        if messy:
-            fname, lname, email, phone, country, postcode = apply_messy_customer_data(
-                fname, lname, email, phone, country, postcode
-            )
-
+def seed_customers(cur, n):
+    print(f"Seeding {n} customers...")
+    for _ in range(n):
         cur.execute(
             """
             INSERT INTO retail.customers
@@ -104,40 +52,25 @@ def seed_customers(cur, n, messy=True):
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
-                fname,
-                lname,
-                email,
-                phone,
+                fake.first_name(),
+                fake.last_name(),
+                fake.unique.email(),
+                fake.phone_number()[:30],
                 fake.street_address(),
                 fake.city(),
                 fake.state(),
-                country,
-                postcode,
+                fake.country(),
+                fake.postcode(),
                 fake.date_time_between(start_date="-2y", end_date="now"),
             ),
         )
 
 
-def seed_products(cur, n, messy=True):
-    print(f"Seeding {n} products (messy={messy})...")
+def seed_products(cur, n):
+    print(f"Seeding {n} products...")
     for _ in range(n):
         category = random.choice(list(CATEGORIES.keys()))
         sub_category = random.choice(CATEGORIES[category])
-        price = round(random.uniform(5, 2000), 2)
-        stock_qty = random.randint(0, 500)
-        brand = random.choice(BRANDS)
-
-        if messy:
-            # 1. Occasional 0.00 price (promotional glitch)
-            if random.random() < 0.03:
-                price = 0.00
-            # 2. Negative stock quantity (oversold inventory anomaly)
-            elif random.random() < 0.03:
-                stock_qty = -random.randint(1, 10)
-            # 3. Unstandardized brand casing
-            if random.random() < 0.15:
-                brand = brand.lower()
-
         cur.execute(
             """
             INSERT INTO retail.products
@@ -145,12 +78,12 @@ def seed_products(cur, n, messy=True):
             VALUES (%s, %s, %s, %s, %s, %s)
             """,
             (
-                f"{brand} {fake.word().capitalize()} {sub_category[:-1] if sub_category.endswith('s') else sub_category}",
+                f"{random.choice(BRANDS)} {fake.word().capitalize()} {sub_category[:-1] if sub_category.endswith('s') else sub_category}",
                 category,
                 sub_category,
-                brand,
-                price,
-                stock_qty,
+                random.choice(BRANDS),
+                round(random.uniform(5, 2000), 2),
+                random.randint(0, 500),
             ),
         )
 
@@ -159,16 +92,14 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--customers", type=int, default=500)
     parser.add_argument("--products", type=int, default=200)
-    parser.add_argument("--messy", action="store_true", default=True, help="Enable realistic dirty data anomalies")
-    parser.add_argument("--no-messy", action="store_false", dest="messy", help="Disable dirty data anomalies")
     args = parser.parse_args()
 
     conn = get_connection()
     conn.autocommit = True
     cur = conn.cursor()
 
-    seed_customers(cur, args.customers, messy=args.messy)
-    seed_products(cur, args.products, messy=args.messy)
+    seed_customers(cur, args.customers)
+    seed_products(cur, args.products)
 
     cur.close()
     conn.close()
@@ -177,4 +108,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

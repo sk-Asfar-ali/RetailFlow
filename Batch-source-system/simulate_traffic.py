@@ -1,3 +1,23 @@
+"""
+simulate_traffic.py
+--------------------
+Continuously simulates live production traffic against the source
+Postgres DB:
+  - New customers signing up (occasionally)
+  - New orders + order_items + payments being created
+  - Order status transitions (PENDING -> CONFIRMED -> SHIPPED -> DELIVERED)
+  - Payment status transitions (INITIATED -> SUCCESS/FAILED)
+  - Product stock decrementing on order, occasional restocks
+
+This is what your CDC / ingestion pipeline (Databricks Autoloader,
+Debezium, JDBC batch pull, etc.) will point at. Every insert/update
+naturally advances `updated_at`, giving you realistic incremental
+extraction signals.
+
+Usage:
+    python simulate_traffic.py --interval 2
+"""
+
 import argparse
 import os
 import random
@@ -14,14 +34,6 @@ fake = Faker()
 PAYMENT_METHODS = ["CARD", "UPI", "NETBANKING", "COD"]
 ORDER_STATUS_FLOW = ["PENDING", "CONFIRMED", "SHIPPED", "DELIVERED"]
 
-COUNTRY_VARIANTS = {
-    "United States": ["USA", "United States", "U.S.A.", "united states", "us"],
-    "United Kingdom": ["UK", "United Kingdom", "U.K.", "great britain", "GB"],
-    "Canada": ["Canada", "CA", "can", "canada"],
-    "India": ["India", "IN", "IND", "india"],
-    "Australia": ["Australia", "AU", "AUS", "australia"],
-}
-
 
 def get_connection():
     return psycopg2.connect(
@@ -30,6 +42,7 @@ def get_connection():
         dbname=os.getenv("PGDATABASE"),
         user=os.getenv("PGUSER"),
         password=os.getenv("PGPASSWORD"),
+        sslmode=os.getenv("PGSSLMODE", "require"),  # Azure Postgres requires SSL
     )
 
 
@@ -38,26 +51,7 @@ def fetch_random_ids(cur, table, id_col, limit=1):
     return [row[0] for row in cur.fetchall()]
 
 
-def create_new_customer(cur, messy=True):
-    fname = fake.first_name()
-    lname = fake.last_name()
-    email = fake.unique.email()
-    phone = fake.phone_number()[:30]
-    country = fake.country()
-    postcode = fake.postcode()
-
-    if messy:
-        if random.random() < 0.2:
-            fname = f"  {fname.lower()}  "
-        if random.random() < 0.2:
-            email = email.upper()
-        if random.random() < 0.15:
-            phone = None
-        for key, variants in COUNTRY_VARIANTS.items():
-            if key.lower() in country.lower():
-                country = random.choice(variants)
-                break
-
+def create_new_customer(cur):
     cur.execute(
         """
         INSERT INTO retail.customers
@@ -66,32 +60,25 @@ def create_new_customer(cur, messy=True):
         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, now())
         """,
         (
-            fname,
-            lname,
-            email,
-            phone,
+            fake.first_name(),
+            fake.last_name(),
+            fake.unique.email(),
+            fake.phone_number()[:30],
             fake.street_address(),
             fake.city(),
             fake.state(),
-            country,
-            postcode,
+            fake.country(),
+            fake.postcode(),
         ),
     )
-    print(f"[{datetime.now()}] NEW CUSTOMER inserted (email: {email})")
+    print(f"[{datetime.now()}] NEW CUSTOMER inserted")
 
 
-def create_new_order(cur, messy=True):
+def create_new_order(cur):
     customer_ids = fetch_random_ids(cur, "customers", "customer_id")
     if not customer_ids:
         return
     customer_id = customer_ids[0]
-
-    country = fake.country()
-    if messy:
-        for key, variants in COUNTRY_VARIANTS.items():
-            if key.lower() in country.lower():
-                country = random.choice(variants)
-                break
 
     cur.execute(
         """
@@ -99,7 +86,7 @@ def create_new_order(cur, messy=True):
         VALUES (%s, now(), 'PENDING', %s, %s)
         RETURNING order_id
         """,
-        (customer_id, fake.city(), country),
+        (customer_id, fake.city(), fake.country()),
     )
     order_id = cur.fetchone()[0]
 
@@ -124,46 +111,31 @@ def create_new_order(cur, messy=True):
         )
         total_amount += float(price) * qty
 
+        # decrement stock (won't go negative)
         new_stock = max(stock_qty - qty, 0)
         cur.execute(
             "UPDATE retail.products SET stock_qty = %s WHERE product_id = %s",
             (new_stock, product_id),
         )
 
-    order_total = round(total_amount, 2)
     cur.execute(
         "UPDATE retail.orders SET total_amount = %s WHERE order_id = %s",
-        (order_total, order_id),
+        (round(total_amount, 2), order_id),
     )
 
-    # Calculate payment amount (inject minor rounding/fee discrepancy if messy)
-    payment_amount = order_total
-    if messy and random.random() < 0.1:
-        payment_amount = round(order_total + random.choice([-0.01, 0.01, 0.05]), 2)
-
+    # create a payment attempt
     cur.execute(
         """
         INSERT INTO retail.payments (order_id, amount, method, status)
         VALUES (%s, %s, %s, 'INITIATED')
         """,
-        (order_id, payment_amount, random.choice(PAYMENT_METHODS)),
+        (order_id, round(total_amount, 2), random.choice(PAYMENT_METHODS)),
     )
 
-    # Occasional duplicate payment gateway retry record if messy
-    if messy and random.random() < 0.08:
-        cur.execute(
-            """
-            INSERT INTO retail.payments (order_id, amount, method, status)
-            VALUES (%s, %s, %s, 'FAILED')
-            """,
-            (order_id, payment_amount, random.choice(PAYMENT_METHODS)),
-        )
-        print(f"[{datetime.now()}] MESSY NOISE: Injected duplicate payment retry attempt for ORDER #{order_id}")
-
-    print(f"[{datetime.now()}] NEW ORDER #{order_id} created with {num_items} items (${order_total:.2f})")
+    print(f"[{datetime.now()}] NEW ORDER #{order_id} created with {num_items} items (${total_amount:.2f})")
 
 
-def progress_order_status(cur, messy=True):
+def progress_order_status(cur):
     """Advance a random in-flight order to its next status."""
     cur.execute(
         """
@@ -183,14 +155,11 @@ def progress_order_status(cur, messy=True):
         idx = ORDER_STATUS_FLOW.index(current_status)
         new_status = ORDER_STATUS_FLOW[min(idx + 1, len(ORDER_STATUS_FLOW) - 1)]
 
-    # Late-arriving timestamp anomaly if messy
-    time_clause = "updated_at = now() - interval '5 minutes'," if messy and random.random() < 0.05 else ""
-
-    cur.execute(f"UPDATE retail.orders SET {time_clause} status = %s WHERE order_id = %s", (new_status, order_id))
+    cur.execute("UPDATE retail.orders SET status = %s WHERE order_id = %s", (new_status, order_id))
     print(f"[{datetime.now()}] ORDER #{order_id} status {current_status} -> {new_status}")
 
 
-def progress_payment_status(cur, messy=True):
+def progress_payment_status(cur):
     """Resolve a random INITIATED payment to SUCCESS or FAILED."""
     cur.execute(
         "SELECT payment_id FROM retail.payments WHERE status = 'INITIATED' ORDER BY random() LIMIT 1"
@@ -209,7 +178,7 @@ def progress_payment_status(cur, messy=True):
     print(f"[{datetime.now()}] PAYMENT #{payment_id} -> {outcome}")
 
 
-def restock_product(cur, messy=True):
+def restock_product(cur):
     product_ids = fetch_random_ids(cur, "products", "product_id")
     if not product_ids:
         return
@@ -239,20 +208,18 @@ def pick_action():
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--interval", type=float, default=2.0, help="seconds between events")
-    parser.add_argument("--messy", action="store_true", default=True, help="Enable realistic dirty data anomalies")
-    parser.add_argument("--no-messy", action="store_false", dest="messy", help="Disable dirty data anomalies")
     args = parser.parse_args()
 
     conn = get_connection()
     conn.autocommit = True
     cur = conn.cursor()
 
-    print(f"Starting live traffic simulation (interval={args.interval}s, messy={args.messy}). Ctrl+C to stop.")
+    print("Starting live traffic simulation. Ctrl+C to stop.")
     try:
         while True:
             action = pick_action()
             try:
-                action(cur, messy=args.messy)
+                action(cur)
             except Exception as e:
                 print(f"Error during {action.__name__}: {e}")
                 conn.rollback()
@@ -266,4 +233,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
