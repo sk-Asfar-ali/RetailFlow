@@ -51,6 +51,46 @@ def fetch_random_ids(cur, table, id_col, limit=1):
     return [row[0] for row in cur.fetchall()]
 
 
+def messy_text(val):
+    if not val or not isinstance(val, str):
+        return val
+    r = random.random()
+    if r < 0.08:
+        return val.upper()
+    elif r < 0.16:
+        return val.lower()
+    elif r < 0.24:
+        return f"  {val}  "
+    return val
+
+
+def messy_email(email):
+    r = random.random()
+    if r < 0.10:
+        return email.upper()
+    elif r < 0.18:
+        return f" {email} "
+    return email
+
+
+def messy_phone(phone):
+    r = random.random()
+    if r < 0.15:
+        return "".join(filter(str.isdigit, phone))[:10]
+    elif r < 0.30:
+        return "N/A"
+    return phone[:30]
+
+
+def messy_status(status):
+    r = random.random()
+    if r < 0.15:
+        return status.lower()
+    elif r < 0.25:
+        return f" {status} "
+    return status
+
+
 def create_new_customer(cur):
     cur.execute(
         """
@@ -60,18 +100,18 @@ def create_new_customer(cur):
         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, now())
         """,
         (
-            fake.first_name(),
-            fake.last_name(),
-            fake.unique.email(),
-            fake.phone_number()[:30],
-            fake.street_address(),
-            fake.city(),
-            fake.state(),
-            fake.country(),
-            fake.postcode(),
+            messy_text(fake.first_name()),
+            messy_text(fake.last_name()),
+            messy_email(fake.unique.email()),
+            messy_phone(fake.phone_number()) if random.random() > 0.10 else None,
+            messy_text(fake.street_address()),
+            messy_text(fake.city()),
+            messy_text(fake.state()),
+            messy_text(fake.country()),
+            fake.postcode() if random.random() > 0.08 else None,
         ),
     )
-    print(f"[{datetime.now()}] NEW CUSTOMER inserted")
+    print(f"[{datetime.now()}] NEW CUSTOMER inserted (messy format)")
 
 
 def create_new_order(cur):
@@ -80,13 +120,16 @@ def create_new_order(cur):
         return
     customer_id = customer_ids[0]
 
+    ship_city = messy_text(fake.city()) if random.random() > 0.05 else None  # ~5% null city
+    ship_country = messy_text(fake.country()) if random.random() > 0.05 else None
+
     cur.execute(
         """
         INSERT INTO retail.orders (customer_id, order_date, status, shipping_city, shipping_country)
         VALUES (%s, now(), 'PENDING', %s, %s)
         RETURNING order_id
         """,
-        (customer_id, fake.city(), fake.country()),
+        (customer_id, ship_city, ship_country),
     )
     order_id = cur.fetchone()[0]
 
@@ -99,7 +142,10 @@ def create_new_order(cur):
         product_id = product_ids[0]
 
         cur.execute("SELECT price, stock_qty FROM retail.products WHERE product_id = %s", (product_id,))
-        price, stock_qty = cur.fetchone()
+        row = cur.fetchone()
+        if not row:
+            continue
+        price, stock_qty = row
         qty = random.randint(1, 3)
 
         cur.execute(
@@ -123,13 +169,17 @@ def create_new_order(cur):
         (round(total_amount, 2), order_id),
     )
 
-    # create a payment attempt
+    # create a payment attempt with messy method format
+    method = random.choice(PAYMENT_METHODS)
+    if random.random() < 0.20:
+        method = method.lower() if random.random() < 0.5 else f" {method} "
+
     cur.execute(
         """
         INSERT INTO retail.payments (order_id, amount, method, status)
         VALUES (%s, %s, %s, 'INITIATED')
         """,
-        (order_id, round(total_amount, 2), random.choice(PAYMENT_METHODS)),
+        (order_id, round(total_amount, 2), method),
     )
 
     print(f"[{datetime.now()}] NEW ORDER #{order_id} created with {num_items} items (${total_amount:.2f})")
@@ -140,7 +190,7 @@ def progress_order_status(cur):
     cur.execute(
         """
         SELECT order_id, status FROM retail.orders
-        WHERE status != 'DELIVERED' AND status != 'CANCELLED'
+        WHERE status NOT IN ('DELIVERED', 'CANCELLED', 'delivered', 'cancelled')
         ORDER BY random() LIMIT 1
         """
     )
@@ -148,34 +198,39 @@ def progress_order_status(cur):
     if not row:
         return
     order_id, current_status = row
+    current_status_clean = current_status.strip().upper()
 
     if random.random() < 0.05:
         new_status = "CANCELLED"
     else:
-        idx = ORDER_STATUS_FLOW.index(current_status)
+        idx = ORDER_STATUS_FLOW.index(current_status_clean) if current_status_clean in ORDER_STATUS_FLOW else 0
         new_status = ORDER_STATUS_FLOW[min(idx + 1, len(ORDER_STATUS_FLOW) - 1)]
 
-    cur.execute("UPDATE retail.orders SET status = %s WHERE order_id = %s", (new_status, order_id))
-    print(f"[{datetime.now()}] ORDER #{order_id} status {current_status} -> {new_status}")
+    # Inject status casing messy drift
+    final_status = messy_status(new_status)
+
+    cur.execute("UPDATE retail.orders SET status = %s WHERE order_id = %s", (final_status, order_id))
+    print(f"[{datetime.now()}] ORDER #{order_id} status {current_status} -> {final_status}")
 
 
 def progress_payment_status(cur):
     """Resolve a random INITIATED payment to SUCCESS or FAILED."""
     cur.execute(
-        "SELECT payment_id FROM retail.payments WHERE status = 'INITIATED' ORDER BY random() LIMIT 1"
+        "SELECT payment_id FROM retail.payments WHERE UPPER(TRIM(status)) = 'INITIATED' ORDER BY random() LIMIT 1"
     )
     row = cur.fetchone()
     if not row:
         return
     payment_id = row[0]
     outcome = "SUCCESS" if random.random() < 0.9 else "FAILED"
+    final_outcome = messy_status(outcome)
     paid_at_clause = "paid_at = now()," if outcome == "SUCCESS" else ""
 
     cur.execute(
         f"UPDATE retail.payments SET {paid_at_clause} status = %s WHERE payment_id = %s",
-        (outcome, payment_id),
+        (final_outcome, payment_id),
     )
-    print(f"[{datetime.now()}] PAYMENT #{payment_id} -> {outcome}")
+    print(f"[{datetime.now()}] PAYMENT #{payment_id} -> {final_outcome}")
 
 
 def restock_product(cur):
