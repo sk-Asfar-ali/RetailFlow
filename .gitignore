@@ -1,0 +1,41 @@
+# Python Virtual Environments
+venv/
+.venv/
+env/
+ENV/
+dbt/venv/
+Batch-source-system/venv/
+Streaming-system/venv/
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# dbt Artifacts & Logs
+dbt/target/
+dbt/dbt_packages/
+dbt/logs/
+target/
+dbt_packages/
+logs/
+*.log
+
+# Environment variables & secrets
+.env
+.env.*
+*.env
+
+# Output / temporary debug logs
+err.txt
+out.txt
+
+# Databricks / IDE / System files
+.databricks/
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+profiles.yml
