@@ -1,0 +1,16 @@
+# This file goes in ~/.dbt/profiles.yml on your local machine (Windows:
+# C:\Users\SkAsfarAlli\.dbt\profiles.yml) -- it is NOT part of the dbt
+# project itself and should NEVER be committed to Git, since it contains
+# your Databricks access token.
+
+retailflow:
+  target: dev
+  outputs:
+    dev:
+      type: databricks
+      catalog: retailflow
+      schema: silver          # default target schema; models override per dbt_project.yml
+      host: "adb-7405609492314235.15.azuredatabricks.net"   # your workspace hostname, no https://
+      http_path: "/sql/1.0/warehouses/<your-warehouse-id>"   # from SQL Warehouse connection details
+      token: "<your-databricks-personal-access-token>"
+      threads: 4

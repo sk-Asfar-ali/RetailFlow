@@ -1,0 +1,69 @@
+version: 2
+
+sources:
+  - name: bronze
+    description: >
+      Raw Bronze Delta tables landed by the Databricks ingestion notebooks
+      (databricks-notebooks/01_bronze/). Batch tables come from Azure Postgres
+      via incremental JDBC; clickstream_events comes from Azure Event Hubs via
+      Structured Streaming.
+    database: retailflow
+    schema: bronze
+    tables:
+      - name: customers
+        description: Customer records from the source Postgres OLTP database.
+        columns:
+          - name: customer_id
+            description: Primary key.
+            tests:
+              - unique
+              - not_null
+
+      - name: products
+        description: Product catalog from the source Postgres OLTP database.
+        columns:
+          - name: product_id
+            description: Primary key.
+            tests:
+              - unique
+              - not_null
+
+      - name: orders
+        description: Orders, including in-flight status (PENDING/CONFIRMED/SHIPPED/DELIVERED/CANCELLED).
+        columns:
+          - name: order_id
+            description: Primary key.
+            tests:
+              - unique
+              - not_null
+          - name: customer_id
+            description: Foreign key to customers.
+            tests:
+              - not_null
+
+      - name: order_items
+        description: Line items per order (insert-only, no updates).
+        columns:
+          - name: order_item_id
+            description: Primary key.
+            tests:
+              - unique
+              - not_null
+
+      - name: payments
+        description: Payment attempts per order.
+        columns:
+          - name: payment_id
+            description: Primary key.
+            tests:
+              - unique
+              - not_null
+
+      - name: clickstream_events
+        description: Raw clickstream events from the Event Hubs streaming ingestion.
+        columns:
+          - name: event_id
+            description: Primary key (UUID).
+            tests:
+              - unique
+              - not_null

@@ -1,0 +1,28 @@
+version: 2
+
+models:
+  - name: gold_daily_sales_summary
+    description: >
+      One row per calendar day, summarizing order volume, revenue, and
+      status breakdown. Primary table for exec/BI dashboards.
+    columns:
+      - name: order_day
+        tests:
+          - unique
+          - not_null
+
+  - name: gold_customer_ltv
+    description: >
+      One row per customer, combining profile data with lifetime order
+      history, revenue, and payment reliability metrics.
+    columns:
+      - name: customer_id
+        tests:
+          - unique
+          - not_null
+
+  - name: gold_clickstream_funnel
+    description: >
+      Single-row summary of the clickstream conversion funnel across all
+      sessions: page_view -> product_view -> add_to_cart -> checkout_start,
+      with stage-to-stage conversion percentages.

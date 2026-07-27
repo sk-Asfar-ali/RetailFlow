@@ -1,0 +1,69 @@
+version: 2
+
+models:
+  - name: silver_customers
+    description: Cleaned, deduplicated customer records.
+    columns:
+      - name: customer_id
+        tests:
+          - unique
+          - not_null
+      - name: email
+        tests:
+          - unique
+          - not_null
+
+  - name: silver_products
+    description: Cleaned product catalog.
+    columns:
+      - name: product_id
+        tests:
+          - unique
+          - not_null
+
+  - name: silver_orders
+    description: Cleaned orders with standardized status values.
+    columns:
+      - name: order_id
+        tests:
+          - unique
+          - not_null
+      - name: customer_id
+        tests:
+          - not_null
+      - name: status
+        tests:
+          - accepted_values:
+              values: ['PENDING', 'CONFIRMED', 'SHIPPED', 'DELIVERED', 'CANCELLED']
+
+  - name: silver_order_items
+    description: Cleaned order line items with computed line_total.
+    columns:
+      - name: order_item_id
+        tests:
+          - unique
+          - not_null
+
+  - name: silver_payments
+    description: Cleaned payment records with standardized status/method values.
+    columns:
+      - name: payment_id
+        tests:
+          - unique
+          - not_null
+      - name: status
+        tests:
+          - accepted_values:
+              values: ['INITIATED', 'SUCCESS', 'FAILED', 'REFUNDED']
+
+  - name: silver_clickstream_sessions
+    description: Clickstream events enriched with session sequencing for funnel analysis.
+    columns:
+      - name: event_id
+        tests:
+          - unique
+          - not_null
+      - name: event_type
+        tests:
+          - accepted_values:
+              values: ['page_view', 'product_view', 'search', 'add_to_cart', 'remove_from_cart', 'checkout_start']
