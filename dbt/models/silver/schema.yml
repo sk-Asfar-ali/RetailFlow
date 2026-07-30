@@ -34,7 +34,8 @@ models:
       - name: status
         tests:
           - accepted_values:
-              values: ['PENDING', 'CONFIRMED', 'SHIPPED', 'DELIVERED', 'CANCELLED']
+              arguments:
+                values: ['PENDING', 'CONFIRMED', 'SHIPPED', 'DELIVERED', 'CANCELLED']
 
   - name: silver_order_items
     description: Cleaned order line items with computed line_total.
@@ -54,7 +55,8 @@ models:
       - name: status
         tests:
           - accepted_values:
-              values: ['INITIATED', 'SUCCESS', 'FAILED', 'REFUNDED']
+              arguments:
+                values: ['INITIATED', 'SUCCESS', 'FAILED', 'REFUNDED']
 
   - name: silver_clickstream_sessions
     description: Clickstream events enriched with session sequencing for funnel analysis.
@@ -66,4 +68,5 @@ models:
       - name: event_type
         tests:
           - accepted_values:
-              values: ['page_view', 'product_view', 'search', 'add_to_cart', 'remove_from_cart', 'checkout_start']
+              arguments:
+                values: ['page_view', 'product_view', 'search', 'add_to_cart', 'remove_from_cart', 'checkout_start']

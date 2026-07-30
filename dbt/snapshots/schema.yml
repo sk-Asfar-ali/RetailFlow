@@ -1,0 +1,30 @@
+version: 2
+
+snapshots:
+  - name: customers_snapshot
+    description: >
+      SCD Type 2 history of the customers dimension. Each row represents
+      a version of a customer's profile, valid between dbt_valid_from and
+      dbt_valid_to (null = currently active version).
+    columns:
+      - name: customer_id
+        description: Natural key of the customer (not unique alone -- unique per version).
+      - name: dbt_scd_id
+        description: Surrogate key uniquely identifying each version of a customer record.
+        tests:
+          - unique
+          - not_null
+
+  - name: products_snapshot
+    description: >
+      SCD Type 2 history of the products dimension. Each row represents
+      a version of a product's price/category, valid between
+      dbt_valid_from and dbt_valid_to (null = currently active version).
+    columns:
+      - name: product_id
+        description: Natural key of the product (not unique alone -- unique per version).
+      - name: dbt_scd_id
+        description: Surrogate key uniquely identifying each version of a product record.
+        tests:
+          - unique
+          - not_null

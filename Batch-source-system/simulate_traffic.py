@@ -8,6 +8,8 @@ Postgres DB:
   - Order status transitions (PENDING -> CONFIRMED -> SHIPPED -> DELIVERED)
   - Payment status transitions (INITIATED -> SUCCESS/FAILED)
   - Product stock decrementing on order, occasional restocks
+  - Customer profile changes (address/city/state) -- SCD2 trigger
+  - Product repricing/recategorization -- SCD2 trigger
 
 This is what your CDC / ingestion pipeline (Databricks Autoloader,
 Debezium, JDBC batch pull, etc.) will point at. Every insert/update
@@ -157,7 +159,6 @@ def create_new_order(cur):
         )
         total_amount += float(price) * qty
 
-        # decrement stock (won't go negative)
         new_stock = max(stock_qty - qty, 0)
         cur.execute(
             "UPDATE retail.products SET stock_qty = %s WHERE product_id = %s",
@@ -169,7 +170,6 @@ def create_new_order(cur):
         (round(total_amount, 2), order_id),
     )
 
-    # create a payment attempt with messy method format
     method = random.choice(PAYMENT_METHODS)
     if random.random() < 0.20:
         method = method.lower() if random.random() < 0.5 else f" {method} "
@@ -206,7 +206,6 @@ def progress_order_status(cur):
         idx = ORDER_STATUS_FLOW.index(current_status_clean) if current_status_clean in ORDER_STATUS_FLOW else 0
         new_status = ORDER_STATUS_FLOW[min(idx + 1, len(ORDER_STATUS_FLOW) - 1)]
 
-    # Inject status casing messy drift
     final_status = messy_status(new_status)
 
     cur.execute("UPDATE retail.orders SET status = %s WHERE order_id = %s", (final_status, order_id))
@@ -246,12 +245,65 @@ def restock_product(cur):
     print(f"[{datetime.now()}] PRODUCT #{product_id} restocked +{restock_amount}")
 
 
+def update_customer_profile(cur):
+    """Simulate a customer moving / updating their profile -- a classic
+    SCD Type 2 trigger (address/city/state change on an existing dimension row).
+    This is a genuine attribute change, not run through messy_text, so the
+    SCD snapshot captures a clean before/after -- separate from the raw data
+    quality noise injected at creation time."""
+    customer_ids = fetch_random_ids(cur, "customers", "customer_id")
+    if not customer_ids:
+        return
+    customer_id = customer_ids[0]
+
+    new_city = fake.city()
+    new_state = fake.state()
+    new_address = fake.street_address()
+    new_postal_code = fake.postcode()
+
+    cur.execute(
+        """
+        UPDATE retail.customers
+        SET city = %s, state = %s, address_line = %s, postal_code = %s
+        WHERE customer_id = %s
+        """,
+        (new_city, new_state, new_address, new_postal_code, customer_id),
+    )
+    print(f"[{datetime.now()}] CUSTOMER #{customer_id} profile updated -> moved to {new_city}, {new_state}")
+
+
+def update_product_details(cur):
+    """Simulate a repricing or recategorization event -- another classic
+    SCD Type 2 trigger (price/category change on an existing dimension row)."""
+    product_ids = fetch_random_ids(cur, "products", "product_id")
+    if not product_ids:
+        return
+    product_id = product_ids[0]
+
+    cur.execute("SELECT price FROM retail.products WHERE product_id = %s", (product_id,))
+    row = cur.fetchone()
+    if not row:
+        return
+    current_price = float(row[0])
+
+    price_change_pct = random.uniform(-0.20, 0.20)
+    new_price = round(max(current_price * (1 + price_change_pct), 1.0), 2)
+
+    cur.execute(
+        "UPDATE retail.products SET price = %s WHERE product_id = %s",
+        (new_price, product_id),
+    )
+    print(f"[{datetime.now()}] PRODUCT #{product_id} repriced ${current_price:.2f} -> ${new_price:.2f}")
+
+
 ACTIONS_WEIGHTED = [
-    (create_new_order, 40),
-    (progress_order_status, 25),
-    (progress_payment_status, 20),
-    (restock_product, 8),
-    (create_new_customer, 7),
+    (create_new_order, 35),
+    (progress_order_status, 22),
+    (progress_payment_status, 18),
+    (restock_product, 7),
+    (create_new_customer, 6),
+    (update_customer_profile, 6),   # SCD2 trigger: customer dimension change
+    (update_product_details, 6),    # SCD2 trigger: product dimension change
 ]
 
 
