@@ -50,6 +50,11 @@ Azure Event Hubs (stream) ──┘      (raw)     (Delta)    (dbt)      (dbt)
   schemas — all data physically verifiable in an owned ADLS Gen2 container.
 - **Tested, documented transformations**: dbt models with source/model tests
   (`unique`, `not_null`, `accepted_values`) and auto-generated lineage docs.
+- **Slowly Changing Dimensions (SCD Type 2)**: hash-based (`check` strategy)
+  dbt snapshots on `customers` and `products`, tracking full history of
+  profile/pricing changes — with a source system deliberately extended to
+  generate genuine dimension-attribute changes (not just new inserts) to
+  make this meaningful.
 - **Cost-aware architecture decisions**: e.g. choosing scheduled
   `availableNow` streaming over an always-on cluster, sized to actual data
   volume rather than defaulting to the most impressive-sounding option —
@@ -71,7 +76,8 @@ RetailFlow/
 │   └── 01_bronze/                  -- Postgres & clickstream ingestion notebooks
 ├── dbt/                             -- Silver + Gold transformation models
 │   ├── models/silver/
-│   └── models/gold/
+│   ├── models/gold/
+│   └── snapshots/                    -- SCD Type 2 history (customers, products)
 ├── docs/
 │   └── architecture.md               -- full system design writeup
 └── README.md                          -- this file
@@ -93,7 +99,8 @@ setup_catalog
 ```
 
 Each run: pulls only new/changed data from both sources, merges into
-Bronze, then rebuilds Silver and Gold via dbt — fully hands-off.
+Bronze, then rebuilds Silver (including SCD2 snapshots) and Gold via
+dbt — fully hands-off.
 
 ---
 
@@ -103,6 +110,33 @@ Bronze, then rebuilds Silver and Gold via dbt — fully hands-off.
 
 Shows the complete Bronze → Silver → Gold dependency graph across all 6
 source tables, 6 Silver models, and 3 Gold models.
+
+---
+
+## Slowly Changing Dimensions (SCD Type 2)
+
+`customers` and `products` are tracked with full history via dbt
+snapshots, using a **hash-based `check` strategy** (not just a
+timestamp column) so any real attribute change is detected reliably.
+
+```sql
+-- What did customer 18's profile look like before their most recent
+-- move, and when did it change?
+SELECT customer_id, city, state, dbt_valid_from, dbt_valid_to
+FROM retailflow.silver.customers_snapshot
+WHERE customer_id = 18
+ORDER BY dbt_valid_from;
+```
+
+| customer_id | city | state | dbt_valid_from | dbt_valid_to |
+|---|---|---|---|---|
+| 18 | South Johnstad | Alabama | 2026-07-26 05:29:46 | 2026-07-30 05:50:16 |
+| 18 | Jillview | Kentucky | 2026-07-30 05:50:16 | *(null — current)* |
+
+The source system (`Batch-source-system/simulate_traffic.py`) was
+deliberately extended with `update_customer_profile` and
+`update_product_details` actions to generate genuine dimension-attribute
+changes — not just new inserts — so this history is real, not synthetic.
 
 ---
 

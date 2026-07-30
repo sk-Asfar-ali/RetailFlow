@@ -225,7 +225,7 @@ setup_catalog
   subscription core quotas.
 - `dbt_transform` uses Databricks' native **dbt task type**, running
   against a Serverless SQL Warehouse, executing `dbt deps → dbt seed →
-  dbt run → dbt test` in sequence.
+  dbt snapshot → dbt run → dbt test` in sequence.
 - Both ingestion tasks depend only on `setup_catalog`, so they run in
   parallel; `dbt_transform` depends on both, ensuring Silver/Gold only
   rebuild after fresh Bronze data lands.
@@ -246,6 +246,57 @@ Databricks SQL Warehouse (no separate transformation engine).
   Also normalizes an inconsistent-casing data quality issue discovered
   in Bronze (`PAGE_VIEW` vs `page_view` etc., from earlier producer test
   runs) rather than silently dropping affected rows.
+
+### Slowly Changing Dimensions (SCD Type 2)
+
+Two dbt **snapshots** track historical versions of dimension attributes
+that change over time — something the standard Silver models (which
+always reflect only the *current* state) cannot answer:
+
+- **`customers_snapshot`** — tracks `city`, `state`, `address_line`,
+  `postal_code`, and other profile fields.
+- **`products_snapshot`** — tracks `price`, `category`, `sub_category`,
+  `brand`, `is_discontinued`.
+
+Both use dbt's **`check` strategy** rather than `timestamp`: instead of
+trusting a single `updated_at` column, dbt computes a hash across an
+explicit `check_cols` list on every run and compares it to the last
+captured version. Any difference — even one not reflected in
+`updated_at` (e.g. a bypassed trigger, a manual fix) — triggers a new
+version. This is more robust than timestamp-based snapshotting for a
+production-style pipeline.
+
+`stock_qty` is deliberately **excluded** from `products_snapshot`'s
+`check_cols` — it changes on nearly every order/restock and is a
+fast-moving operational metric, not a dimensional attribute worth
+versioning; including it would create a new SCD version almost every
+run, defeating the purpose.
+
+The source system (`Batch-source-system/simulate_traffic.py`) was
+extended with two new actions specifically to generate genuine SCD2
+history: `update_customer_profile` (simulates a customer moving) and
+`update_product_details` (simulates repricing) — both perform real
+`UPDATE`s on existing dimension rows, distinct from the messy-data
+injection applied at record creation time.
+
+A derived model, **`silver_customer_profile_history`**, demonstrates
+practical use of this history — counting how many times each customer's
+profile has changed and flagging customers who have relocated. This is
+a question genuinely unanswerable from the current-state
+`silver_customers` table alone.
+
+```sql
+-- Example: what did customer 18's profile look like before their most
+-- recent move, and when did it change?
+SELECT customer_id, city, state, dbt_valid_from, dbt_valid_to
+FROM retailflow.silver.customers_snapshot
+WHERE customer_id = 18
+ORDER BY dbt_valid_from;
+```
+
+Snapshots run as part of the orchestrated pipeline (`dbt snapshot`,
+before `dbt run`, in the `dbt_transform` Job task), so history
+accumulates automatically on every scheduled run.
 
 ### Gold layer — business aggregates
 - **`gold_daily_sales_summary`** — daily order volume, gross/net revenue,
@@ -284,6 +335,7 @@ directly on the three Gold tables, with three tabs:
 | Single-node Job Cluster (not autoscaling) | Data volumes don't warrant distributed compute; avoids Azure core quota limits |
 | dbt for Silver/Gold, not raw PySpark | Version-controlled, testable, documented SQL transformations with lineage |
 | Landing zone before Bronze | Raw audit trail; enables reprocessing without re-hitting live sources |
+| `check` strategy over `timestamp` for SCD2 snapshots | Doesn't rely solely on `updated_at` being trustworthy; detects any actual attribute change via hashing |
 
 ---
 
@@ -298,7 +350,8 @@ RetailFlow/
 │   └── 01_bronze/
 ├── dbt/                          -- Silver + Gold transformation models
 │   ├── models/silver/
-│   └── models/gold/
+│   ├── models/gold/
+│   └── snapshots/                 -- SCD Type 2 history (customers, products)
 ├── docs/
 │   └── architecture.md            -- this file
 └── README.md
