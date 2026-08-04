@@ -51,10 +51,12 @@ Azure Event Hubs (stream) ──┘      (raw)     (Delta)    (dbt)      (dbt)
 - **Tested, documented transformations**: dbt models with source/model tests
   (`unique`, `not_null`, `accepted_values`) and auto-generated lineage docs.
 - **Slowly Changing Dimensions (SCD Type 2)**: hash-based (`check` strategy)
-  dbt snapshots on `customers` and `products`, tracking full history of
-  profile/pricing changes — with a source system deliberately extended to
-  generate genuine dimension-attribute changes (not just new inserts) to
-  make this meaningful.
+  dbt snapshots on `customers` and `products`, covering full insert/update/
+  delete semantics — including a soft-delete pattern chosen deliberately
+  over hard deletes to match real-world CDC/referential-integrity
+  constraints — with a source system extended to generate genuine
+  dimension-attribute changes (not just new inserts) to make this
+  meaningful.
 - **Cost-aware architecture decisions**: e.g. choosing scheduled
   `availableNow` streaming over an always-on cluster, sized to actual data
   volume rather than defaulting to the most impressive-sounding option —
@@ -118,6 +120,13 @@ source tables, 6 Silver models, and 3 Gold models.
 `customers` and `products` are tracked with full history via dbt
 snapshots, using a **hash-based `check` strategy** (not just a
 timestamp column) so any real attribute change is detected reliably.
+All three classic SCD2 cases are covered:
+
+| Case | Example |
+|---|---|
+| **Insert** | New customer/product created → new versioned row |
+| **Update** | Customer moves / product repriced → old version closed, new version opened |
+| **Delete** | Product discontinued → modeled as a **soft delete** (`is_discontinued = true`), not a hard `DELETE`, since incremental/merge-based CDC can't reliably detect hard deletes and would violate foreign keys on referenced products |
 
 ```sql
 -- What did customer 18's profile look like before their most recent
@@ -132,6 +141,15 @@ ORDER BY dbt_valid_from;
 |---|---|---|---|---|
 | 18 | South Johnstad | Alabama | 2026-07-26 05:29:46 | 2026-07-30 05:50:16 |
 | 18 | Jillview | Kentucky | 2026-07-30 05:50:16 | *(null — current)* |
+
+```sql
+-- Full repricing history for a single product, with an explicit
+-- is_current flag for readability
+SELECT product_id, price, is_discontinued, is_current, dbt_valid_from, dbt_valid_to
+FROM retailflow.silver.silver_products_current_flag
+WHERE product_id = 1
+ORDER BY dbt_valid_from;
+```
 
 The source system (`Batch-source-system/simulate_traffic.py`) was
 deliberately extended with `update_customer_profile` and

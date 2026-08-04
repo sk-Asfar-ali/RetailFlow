@@ -272,18 +272,50 @@ fast-moving operational metric, not a dimensional attribute worth
 versioning; including it would create a new SCD version almost every
 run, defeating the purpose.
 
-The source system (`Batch-source-system/simulate_traffic.py`) was
-extended with two new actions specifically to generate genuine SCD2
-history: `update_customer_profile` (simulates a customer moving) and
-`update_product_details` (simulates repricing) — both perform real
-`UPDATE`s on existing dimension rows, distinct from the messy-data
-injection applied at record creation time.
+#### Full insert / update / delete coverage
 
-A derived model, **`silver_customer_profile_history`**, demonstrates
-practical use of this history — counting how many times each customer's
-profile has changed and flagging customers who have relocated. This is
-a question genuinely unanswerable from the current-state
-`silver_customers` table alone.
+The classic SCD Type 2 merge pattern handles three cases, all
+demonstrated in this project:
+
+| Case | Behavior | Where it's exercised |
+|---|---|---|
+| **Insert** — new PK in source, not yet in snapshot | New row inserted, `dbt_valid_from = now()`, `dbt_valid_to = NULL` | Every new customer/product created by the simulator |
+| **Update** — PK in both, hash of `check_cols` differs | Old row closed (`dbt_valid_to = now()`), new version inserted | `update_customer_profile`, `update_product_details` (repricing) |
+| **Delete** — dimension row logically removed | Modeled as a **soft delete**, not a hard `DELETE` | `update_product_details` flips `is_discontinued = true` ~10% of the time |
+
+**Why soft-delete instead of a hard `DELETE`:** this project's Bronze
+ingestion uses simple incremental extraction (`updated_at`-watermarked
+JDBC pull + `MERGE`), which — like most non-CDC-log-based ingestion
+patterns — has a structural blind spot: a row that disappears from the
+source simply stops appearing in future extracts. Nothing in a plain
+`MERGE` (`WHEN MATCHED THEN UPDATE`, `WHEN NOT MATCHED THEN INSERT`)
+tells Bronze that a row was removed, so a hard delete would silently
+fail to propagate and the snapshot's `invalidate_hard_deletes` setting
+would never actually trigger without additional reconciliation logic
+(e.g. `MERGE ... WHEN NOT MATCHED BY SOURCE THEN DELETE`) — and even
+then, hard-deleting a `product_id` referenced by existing `order_items`
+would violate the foreign key constraint.
+
+Real e-commerce systems face the same constraints and near-universally
+solve it the same way: soft-delete via a status flag rather than a hard
+delete. Since `is_discontinued` is already tracked in
+`products_snapshot`'s `check_cols`, flipping it produces a normal,
+correctly-detected SCD2 version change — the "delete" case reduces to
+the same mechanism as any other update, with no special-casing required
+in the snapshot logic itself.
+
+#### Convenience models
+
+`silver_customers_current_flag` and `silver_products_current_flag` are
+thin views over the raw snapshots exposing an explicit `is_current`
+boolean (`dbt_valid_to IS NULL`), since that convention isn't
+self-evident to someone querying the table without dbt snapshot
+familiarity.
+
+`silver_customer_profile_history` demonstrates practical use of this
+history — counting how many times each customer's profile has changed
+and flagging customers who have relocated. This is a question genuinely
+unanswerable from the current-state `silver_customers` table alone.
 
 ```sql
 -- Example: what did customer 18's profile look like before their most
@@ -292,7 +324,21 @@ SELECT customer_id, city, state, dbt_valid_from, dbt_valid_to
 FROM retailflow.silver.customers_snapshot
 WHERE customer_id = 18
 ORDER BY dbt_valid_from;
+
+-- Example: full repricing history for a product
+SELECT product_id, price, is_discontinued, is_current, dbt_valid_from, dbt_valid_to
+FROM retailflow.silver.silver_products_current_flag
+WHERE product_id = 1
+ORDER BY dbt_valid_from;
 ```
+
+The source system (`Batch-source-system/simulate_traffic.py`) was
+extended with dedicated actions to generate genuine SCD2 history:
+`update_customer_profile` (simulates a customer moving) and
+`update_product_details` (simulates repricing, and occasionally
+discontinuing a product) — both perform real `UPDATE`s on existing
+dimension rows, distinct from the messy-data injection applied at
+record creation time.
 
 Snapshots run as part of the orchestrated pipeline (`dbt snapshot`,
 before `dbt run`, in the `dbt_transform` Job task), so history
@@ -336,6 +382,7 @@ directly on the three Gold tables, with three tabs:
 | dbt for Silver/Gold, not raw PySpark | Version-controlled, testable, documented SQL transformations with lineage |
 | Landing zone before Bronze | Raw audit trail; enables reprocessing without re-hitting live sources |
 | `check` strategy over `timestamp` for SCD2 snapshots | Doesn't rely solely on `updated_at` being trustworthy; detects any actual attribute change via hashing |
+| Soft-delete (`is_discontinued` flag) over hard `DELETE` for SCD2 "delete" case | Incremental/merge-based CDC can't detect hard deletes without added reconciliation logic; hard-deleting a referenced product would violate FK constraints; matches real e-commerce practice |
 
 ---
 

@@ -273,18 +273,35 @@ def update_customer_profile(cur):
 
 
 def update_product_details(cur):
-    """Simulate a repricing or recategorization event -- another classic
-    SCD Type 2 trigger (price/category change on an existing dimension row)."""
+    """Simulate a repricing/recategorization event -- and occasionally a
+    product being discontinued (soft-delete). Real e-commerce systems
+    avoid hard deletes on dimension rows -- it breaks referential
+    integrity (order_items still reference the product) and is invisible
+    to simple incremental/merge-based CDC, which only ever sees INSERTs
+    and UPDATEs, never a row disappearing. `is_discontinued` is already
+    tracked in the SCD2 check_cols, so flipping it produces a normal,
+    correctly-detected version change -- this is the SCD2 'delete'
+    semantics done the way production systems actually do it."""
     product_ids = fetch_random_ids(cur, "products", "product_id")
     if not product_ids:
         return
     product_id = product_ids[0]
 
-    cur.execute("SELECT price FROM retail.products WHERE product_id = %s", (product_id,))
+    cur.execute("SELECT price, is_discontinued FROM retail.products WHERE product_id = %s", (product_id,))
     row = cur.fetchone()
     if not row:
         return
-    current_price = float(row[0])
+    current_price, is_discontinued = row
+    current_price = float(current_price)
+
+    # ~10% of update events discontinue the product instead of repricing it
+    if not is_discontinued and random.random() < 0.10:
+        cur.execute(
+            "UPDATE retail.products SET is_discontinued = true WHERE product_id = %s",
+            (product_id,),
+        )
+        print(f"[{datetime.now()}] PRODUCT #{product_id} discontinued (soft-delete) -- tests SCD2 'delete' semantics")
+        return
 
     price_change_pct = random.uniform(-0.20, 0.20)
     new_price = round(max(current_price * (1 + price_change_pct), 1.0), 2)
@@ -302,8 +319,8 @@ ACTIONS_WEIGHTED = [
     (progress_payment_status, 18),
     (restock_product, 7),
     (create_new_customer, 6),
-    (update_customer_profile, 6),   # SCD2 trigger: customer dimension change
-    (update_product_details, 6),    # SCD2 trigger: product dimension change
+    (update_customer_profile, 6),      # SCD2 trigger: customer dimension change
+    (update_product_details, 6),       # SCD2 trigger: product price/discontinue change
 ]
 
 
